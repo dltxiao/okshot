@@ -24,7 +24,8 @@ Alt+Shift+5   窗口截图            Ctrl+Alt+Shift+5   窗口 → 只进剪贴
 | ⌃⇧⌘3/4 只复制到剪贴板、不存盘 | `Ctrl+Alt+Shift+3/4/5` | 剪贴板里是真正的 PNG 图像 |
 | 存到桌面，文件名 `Screenshot 2026-02-14 at 15.04.05.png` | ✅ | 模板可配置 |
 | 快门音效 | ✅ | 走系统 `canberra-gtk-play` 音效 |
-| 快门白闪 | ✅（区域模式） | 全屏/窗口模式没有（见限制说明） |
+| 快门白闪 | ✅（区域模式，只闪选区） | 全屏/窗口模式没有（见限制说明） |
+| 多显示器 | ✅ | 每块屏一个全屏覆盖层，各画自己的切片；可跨屏框选；分数缩放/异形布局都按实测模型处理 |
 
 ## 环境要求
 
@@ -93,10 +94,18 @@ GNOME 50 的 `org.gnome.Shell.Screenshot` / `org.gnome.Shell.Introspect` 都挂�
   每个显示器一个无边框全屏窗口，各自画冻结画面的对应切片，最后从同一张像素
   缓冲里裁剪——这样跨显示器的选区也能正确裁切。绘制用 GTK4 的 Gsk 快照节点，
   不依赖 pycairo。
-* **逻辑像素 ↔ 物理像素**：分数缩放（本机 1.25）下 GTK 用逻辑像素、截图是物理
-  像素，比例来自 `org.gnome.Mutter.DisplayConfig.GetCurrentState`（这个接口没有
-  白名单限制）。若抓到的图与 Mutter 报告的布局对不上，会自动退回按图像尺寸等比
-  映射。
+* **逻辑像素 ↔ 图像像素（多屏重点）**：Mutter 报告的逻辑显示器是「位置用布局原值、
+  尺寸除以缩放」——比如 1920x1200@1.25 的笔记本屏在 `(0,1080)`、尺寸记作 1536x960，
+  这正好等于 `Gdk.Monitor.get_geometry()`。而**截图是整个舞台按同一个全局缩放因子
+  渲染的**：1920x1080@1.0 的外接屏 + 1920x1200@1.25 的笔记本屏会得到 2400x2550
+  （舞台 1920x2040 × 1.25），**不是**两块屏物理像素的并集 1920x2280。所以映射按
+  「舞台 × 全局缩放」来做，显示器用连接器名（`eDP-1`/`HDMI-1`）配对；
+  如果抓到的图更符合「每屏物理像素」或完全对不上，会自动切换到对应的兜底模型。
+  链路日志里能直接看到用了哪个模型：
+  `overlay: image (2400, 2550), mapping=stage, 2 GTK monitor(s)`。
+* **多显示器**：每个显示器一个无边框全屏窗口，各画自己那一片冻结画面，因此任何一块
+  屏都不会出现「没被覆盖/选了别屏内容」的情况（每屏切片都经实机像素校验）。
+  框选可以跨屏；提示文字只显示在主屏；白闪只闪选区。
 * **剪贴板**：Wayland 下只有「有键盘焦点的客户端」才能占据 selection，快捷键
   拉起的进程拿不到输入序列号，所以由一个分离的 helper 走 XWayland 设置剪贴板
   （Mutter 负责 X11↔Wayland 剪贴板桥接），helper 默认持有 180 秒。
@@ -135,7 +144,7 @@ GNOME 50 的 `org.gnome.Shell.Screenshot` / `org.gnome.Shell.Introspect` 都挂�
 | 按快捷键没反应 | `python3 -m macshot.hotkeys show` 看绑定是否在；`gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings` |
 | 弹出的是 GNOME 自带截图 UI | 只有 `Alt+Shift+5` / 空格是故意的；其它模式若也这样，看日志里是否有 portal 报错 |
 | 剪贴板是空的 | 确认 `echo $DISPLAY` 有值（XWayland 在跑）；看日志里有没有 `x11 clipboard helper unavailable` |
-| 截图全黑/画面不对 | 多显示器混合缩放时看日志里的 `layout=` 与 `image=`，若尺寸对不上会走等比兜底 |
+| 截图内容不对/某块屏没覆盖 | 看日志第一行 `overlay: image (W, H), mapping=..., N GTK monitor(s)`：`N` 应等于实际显示器数，`mapping` 通常是 `stage`；再往下每块屏都有一行 `GTK monitor i Rect(...) (连接器名) -> 显示器名, image slice Rect(...)` |
 | 快捷键跟别的软件冲突 | 改 `macshot/hotkeys.py` 的 `BINDINGS`，再 `./install.sh --keys` |
 
 ## 开发
@@ -148,7 +157,7 @@ macshot/overlay.py    GTK4 冻结屏选择覆盖层（Gsk 绘制）
 macshot/save.py       命名/移动/裁剪/剪贴板 helper/音效/通知
 macshot/hotkeys.py    gsettings 自定义快捷键增删
 macshot/cli.py        参数解析与三种模式流程
-tests/                unittest 测试（41 个）
+tests/                unittest 测试（52 个）
 ```
 
 ```bash

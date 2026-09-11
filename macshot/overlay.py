@@ -146,14 +146,24 @@ class SelectionOverlay:
         display = Gdk.Display.get_default()
         gdk_monitors = display.get_monitors()
         count = gdk_monitors.get_n_items()
+        self.log("overlay: image %s, mapping=%s, %d GTK monitor(s)", self.image_size,
+                 self.layout.mapping_kind(self.image_size), count)
         for index in range(count):
             gdk_monitor = gdk_monitors.get_item(index)
             geometry = gdk_monitor.get_geometry()
             logical = Rect(geometry.x, geometry.y, geometry.width, geometry.height)
-            monitor = self.layout.monitor_matching(logical)
+            connector = (gdk_monitor.get_connector()
+                         if hasattr(gdk_monitor, "get_connector") else None)
+            # The connector name is the most reliable key; geometry (which Mutter
+            # reports in the same stage space as DisplayConfig) is the backup.
+            monitor = (self.layout.monitor_matching(logical, connector)
+                       or self.layout.monitor_matching(logical))
             if monitor is None:
                 monitor = self.layout.monitors[min(index, len(self.layout.monitors) - 1)]
             is_primary = monitor.primary or index == 0
+            self.log("overlay: GTK monitor %d %s (%s) -> %s, image slice %s",
+                     index, logical, connector or "?", monitor.name,
+                     self.layout.physical_crop(monitor.logical_rect, self.image_size))
 
             window = Gtk.ApplicationWindow(application=app)
             window.set_decorated(False)
@@ -228,6 +238,8 @@ class SelectionOverlay:
         return self._result or OverlayResult("cancel")
 
     def _finish(self, result: OverlayResult) -> None:
+        self.log("overlay: finishing (%s%s)", result.kind,
+                 f", {result.rect}" if result.rect else "")
         self._result = result
         if self._app is not None:
             self._app.quit()
@@ -250,17 +262,21 @@ class SelectionOverlay:
         return self.layout.monitors[0]
 
     def _global(self, window: Gtk.Window, x: float, y: float) -> tuple[float, float]:
+        """Window-local coordinates -> desktop (stage) coordinates."""
         monitor = self._monitor_of(window)
-        return monitor.logical_x + x, monitor.logical_y + y
+        return monitor.x + x, monitor.y + y
 
     def _local(self, monitor: Monitor, rect: Rect) -> Rect:
-        return Rect(rect.x - monitor.logical_x, rect.y - monitor.logical_y,
+        """Desktop (stage) coordinates -> this window's local coordinates."""
+        return Rect(rect.x - monitor.x, rect.y - monitor.y,
                     rect.width, rect.height)
 
     def _on_pressed(self, _gesture, n_press: int, x: float, y: float,
                     window: Gtk.Window) -> None:
         self._last_activity = time.monotonic()
         gx, gy = self._global(window, x, y)
+        self.log("overlay: press #%d at stage (%.0f, %.0f), phase=%s", n_press, gx, gy,
+                 self._phase)
         self._anchor = (gx, gy)
         self._last = (gx, gy)
         self._moved = False
@@ -424,7 +440,8 @@ class SelectionOverlay:
 
         if self._sel is not None and not self._sel.is_empty():
             self._paint_selection(snapshot, widget, width, height, monitor, self._sel)
-        elif self.hints and time.monotonic() - self._last_activity > HINT_DELAY:
+        elif primary and self.hints and time.monotonic() - self._last_activity > HINT_DELAY:
+            # Only the primary monitor carries the cheat sheet, like the top bar.
             self._paint_hint(snapshot, widget, width, height)
 
     def _paint_selection(self, snapshot, widget, width: int, height: int,
@@ -471,8 +488,14 @@ class SelectionOverlay:
             return
         elapsed = time.monotonic() - self._flash_started
         alpha = max(0.0, 1.0 - elapsed / FLASH_SECONDS) * 0.85
+        # Flash the captured region only: with several monitors each window
+        # would otherwise turn its whole screen white.
         local = self._local(monitor, self._sel)
-        snapshot.append_color(_rgba(WHITE, alpha), _rect(0, 0, width, height))
+        visible = local.intersection(Rect(0, 0, width, height))
+        if visible is None:
+            return
+        snapshot.append_color(_rgba(WHITE, alpha),
+                              _rect(visible.x, visible.y, visible.width, visible.height))
 
     def _paint_hint(self, snapshot, widget, width: int, height: int) -> None:
         self._paint_badge(snapshot, widget, 0, 0, None, hint_text(self.allow_window),
