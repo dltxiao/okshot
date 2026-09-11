@@ -50,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-flash", action="store_true", help="no white flash")
     parser.add_argument("--no-hints", action="store_true",
                         help="hide the on screen hint while selecting")
+    parser.add_argument("--no-annotate", action="store_true",
+                        help="disable the annotation toolbar (plain region capture)")
     parser.add_argument("--notify", action="store_true",
                         help="send a desktop notification when a file was written")
     parser.add_argument("--image", default=None,
@@ -62,6 +64,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="internal: clipboard holder lifetime in seconds")
     parser.add_argument("--preview-selection", default=None, metavar="X,Y,W,H",
                         help="internal: draw a fixed selection (UI development)")
+    parser.add_argument("--preview-annotations", action="store_true",
+                        help="internal: preload one annotation of every kind")
+    parser.add_argument("--auto-confirm", type=float, default=None, metavar="SECONDS",
+                        help="internal: save automatically after N seconds")
     parser.add_argument("--clipboard-holder", default=None, metavar="PNG",
                         help="internal: own the clipboard for this file")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -205,7 +211,9 @@ def flow_region(args, config: Config) -> int:
 
     if args.select:
         selection = parse_select(args.select)
+        exported = None
     else:
+        annotated = cache_dir() / f"annotated-{int(time.time() * 1000)}.png"
         overlay = SelectionOverlay(
             source, layout,
             allow_window=config.window_mode != "off",
@@ -214,6 +222,10 @@ def flow_region(args, config: Config) -> int:
             logger=log.debug,
             preview_selection=(parse_select(args.preview_selection)
                                if args.preview_selection else None),
+            export_path=str(annotated),
+            allow_annotations=not args.no_annotate,
+            preview_annotations=args.preview_annotations,
+            auto_confirm=args.auto_confirm,
         )
         result = overlay.run()
         if result.kind == "window":
@@ -224,24 +236,24 @@ def flow_region(args, config: Config) -> int:
             remove_quietly(temporary)
             return EXIT_CANCELLED
         selection = result.rect
+        exported = Path(result.export_path) if result.export_path else None
 
     crop = layout.physical_crop(selection, size)
-    log.info("selection %s -> crop %s", selection, crop)
+    log.info("selection %s -> crop %s%s", selection, crop,
+             " (annotated)" if exported else "")
     if config.play_sound and not args.no_sound:
         play_shutter_sound()
 
+    produced = exported if exported is not None else _crop_to_temp(source, crop)
+    remove_quietly(temporary)
+
     if args.clipboard:
-        target = cache_dir() / f"clip-{int(time.time() * 1000)}.png"
-        crop_png(source, crop, target)
-        remove_quietly(temporary)
-        feed_clipboard(target, config, clipboard_only=False)
+        feed_clipboard(produced, config, clipboard_only=True)
         return EXIT_OK
 
     destination = move_into(
-        _crop_to_temp(source, crop), config.save_path,
-        build_filename(config.filename_template),
+        produced, config.save_path, build_filename(config.filename_template),
     )
-    remove_quietly(temporary)
     log.info("saved %s", destination)
     if args.notify:
         notify("已保存截图", str(destination))

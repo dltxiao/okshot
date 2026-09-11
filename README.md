@@ -1,7 +1,7 @@
 # macshot — 仿 macOS 的 GNOME/Wayland 截图工具
 
 在 Ubuntu 26.04 + GNOME 50 (Wayland) 上复刻 macOS 的 ⇧⌘3 / ⇧⌘4 / ⇧⌘5 截图体验：
-按快捷键 → 冻结画面 → 框选/选窗口 → 落盘到桌面或进剪贴板。
+按快捷键 → 冻结画面 → 框选/选窗口 → **微信风格标注** → 落盘到桌面或进剪贴板。
 
 ```
 Alt+Shift+3   全屏截图            Ctrl+Alt+Shift+3   全屏 → 只进剪贴板
@@ -26,6 +26,7 @@ Alt+Shift+5   窗口截图            Ctrl+Alt+Shift+5   窗口 → 只进剪贴
 | 快门音效 | ✅ | 走系统 `canberra-gtk-play` 音效 |
 | 快门白闪 | ✅（区域模式，只闪选区） | 全屏/窗口模式没有（见限制说明） |
 | 多显示器 | ✅ | 每块屏一个全屏覆盖层，各画自己的切片；可跨屏框选；分数缩放/异形布局都按实测模型处理 |
+| 截图后直接标注（微信风格） | ✅ | 框选完成即出现工具栏：矩形/圆圈/箭头/画笔/马赛克/文字，含撤销、颜色、粗细 |
 
 ## 环境要求
 
@@ -73,13 +74,34 @@ macshot --config ~/my.json
 | `-d, --delay N` | 截图前等待 N 秒 |
 | `-s, --save-dir DIR` | 保存目录（默认 `~/Desktop`，不存在时退回 XDG 桌面目录） |
 | `--no-sound` / `--no-flash` / `--no-hints` | 关掉声音 / 白闪 / 屏幕提示 |
+| `--no-annotate` | 关闭标注工具栏（纯框选） |
 | `--notify` | 存盘后弹通知 |
 | `--image FILE` | 用现成 PNG 代替实时抓屏（调试用） |
 | `--select X,Y,W,H` | 跳过交互，直接按逻辑坐标裁剪（脚本/测试用） |
 | `-v, --verbose` | 同时输出日志到终端 |
 
-区域模式的交互：拖动框选 → 松手后进入「调整」态（选区外变暗、八个手柄可拖）→
-`Enter`/单击选区内部/双击保存，`Esc` 取消，方向键微调，空格切窗口模式。
+区域模式的交互：拖动框选 → 松手后进入「调整」态（选区外变暗、八个手柄可拖、工具栏出现）
+→ `Enter`/单击选区内部/双击保存，`Esc` 取消，方向键微调，空格切窗口模式。
+
+### 标注（微信风格）
+
+框选完成后工具栏会出现在选区下方，六种工具任选：
+
+| 工具 | 用法 | 快捷键 |
+| --- | --- | --- |
+| 移动/调整选区 | 拖动选区内部移动、拖八个手柄改大小 | `1` |
+| 矩形 | 拖出一个空心矩形 | `2` |
+| 圆圈 | 拖出椭圆/圆 | `3` |
+| 箭头 | 从起点拖到终点（自动带箭头） | `4` |
+| 画笔 | 自由绘制（单击留点） | `5` |
+| 马赛克 | 涂抹打码（块状像素化，块大小随粗细） | `6` |
+| 文字 | 在选区里单击 → 出现输入框 → 打字 → `Enter` 确认 | `7` |
+
+* 工具栏：`＋/−` 调线宽与字号（1–12）、6 个颜色圆点、撤销、保存、取消。
+* `Ctrl+Z` 撤销、`Ctrl+Shift+Z` 重做；`Enter` 保存、`Esc` 取消（打字时 `Esc` 只关输入框）。
+* 标注只在选区内生效（超出部分会被裁掉），导出的 PNG 与所见完全一致（同一套渲染代码）。
+* 文字走 Pango，中文/emoji 都能输入（输入框是真正的 GTK 输入框，支持输入法）。
+* 不想用标注可以 `--no-annotate`，恢复成纯框选。
 
 ## 工作原理（为什么这么做）
 
@@ -106,6 +128,14 @@ GNOME 50 的 `org.gnome.Shell.Screenshot` / `org.gnome.Shell.Introspect` 都挂�
 * **多显示器**：每个显示器一个无边框全屏窗口，各画自己那一片冻结画面，因此任何一块
   屏都不会出现「没被覆盖/选了别屏内容」的情况（每屏切片都经实机像素校验）。
   框选可以跨屏；提示文字只显示在主屏；白闪只闪选区。
+* **标注渲染**：预览与导出共用同一套代码，只是换了坐标映射（`Mapper.preview`
+  用逻辑像素，`Mapper.export` 用导出图的像素），所以所见即所得。绘制全部走 Gsk
+  的 snapshot 节点：这套 PyGObject 没有 cairo 的 foreign struct 转换器
+  （`gi._gi_cairo` 缺失，`PangoCairo` 与 `append_cairo` 都不可用），而 Gsk 足够——
+  描边路径、Pango 文字（中文没问题），马赛克则用 `push_mask` 把笔迹做成遮罩再叠
+  像素化图层（`push_mask` 需要两次 `pop()`：一次结束遮罩定义、一次结束被遮罩内容）。
+  导出时把「底图 + 标注」渲染进一张离屏纹理再写 PNG；实测无标注的底图经这条通路
+  后逐像素偏差为 0，所以没有标注时仍走原来的 GdkPixbuf 裁剪。
 * **剪贴板**：Wayland 下只有「有键盘焦点的客户端」才能占据 selection，快捷键
   拉起的进程拿不到输入序列号，所以由一个分离的 helper 走 XWayland 设置剪贴板
   （Mutter 负责 X11↔Wayland 剪贴板桥接），helper 默认持有 180 秒。
@@ -154,13 +184,18 @@ macshot/portal.py     XDG portal 客户端（Screenshot / Response 信号）
 macshot/monitors.py   Mutter DisplayConfig → 显示器布局与缩放映射
 macshot/selection.py  纯几何：选区正规化、手柄命中、缩放、移动
 macshot/overlay.py    GTK4 冻结屏选择覆盖层（Gsk 绘制）
+macshot/annotate.py   标注模型（图形/撤销栈/坐标映射）+ Gsk 绘制与离屏栅格化
 macshot/save.py       命名/移动/裁剪/剪贴板 helper/音效/通知
 macshot/hotkeys.py    gsettings 自定义快捷键增删
 macshot/cli.py        参数解析与三种模式流程
-tests/                unittest 测试（52 个）
+tests/                unittest 测试（92 个）
 ```
 
 ```bash
 python3 -m unittest discover -s tests -t .   # 全部测试
 macshot region --image shot.png --select 100,80,600,400 -s /tmp   # 不走交互的端到端
+
+# 无鼠标验证标注：预置一个选区 + 六种样例标注，3 秒后自动保存
+macshot region --image shot.png --preview-selection 300,200,800,500 \
+               --preview-annotations --auto-confirm 3 -s /tmp
 ```
