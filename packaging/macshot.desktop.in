@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=macshot
+Name[zh_CN]=macshot 截图
+GenericName=Screenshot tool
+Comment=macOS style screenshots for GNOME on Wayland
+Comment[zh_CN]=仿 macOS 的 GNOME/Wayland 截图工具
+Exec=@EXEC@ %u
+Icon=macshot
+Terminal=false
+Categories=Utility;Graphics;
+Keywords=screenshot;capture;screen;
+StartupNotify=false
